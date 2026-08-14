@@ -16,7 +16,7 @@ export interface CodeReviewFinding {
 }
 
 export interface CodeReviewResponse {
-  overallScore: number;
+  score: number;
   summary: string;
   categories: CodeReviewCategoryScores;
   findings: CodeReviewFinding[];

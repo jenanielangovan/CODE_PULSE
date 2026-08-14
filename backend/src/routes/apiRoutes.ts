@@ -6,11 +6,11 @@ const reviewService = new ReviewService();
 
 /**
  * POST /api/reviews
- * Request Body: { code: string, filename?: string, repositoryId?: string, commitHash?: string, branch?: string }
+ * Request Body: { code: string, filename?: string, userId?: string, projectId?: string, commitHash?: string, branch?: string }
  */
 router.post('/reviews', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { code, filename, repositoryId, commitHash, branch } = req.body;
+    const { code, filename, userId, projectId, commitHash, branch } = req.body;
 
     if (!code || typeof code !== 'string') {
       res.status(400).json({ error: 'Missing or invalid "code" parameter in request body.' });
@@ -18,7 +18,14 @@ router.post('/reviews', async (req: Request, res: Response): Promise<void> => {
     }
 
     console.log(`[APIRoutes]: Processing code review. Code length: ${code.length}`);
-    const review = await reviewService.createReview(code, filename, repositoryId, commitHash, branch);
+    const review = await reviewService.createReview(
+      code,
+      filename,
+      userId || 'default_user',
+      projectId || 'default_project',
+      commitHash,
+      branch
+    );
 
     res.status(201).json(review);
   } catch (error: any) {
@@ -81,12 +88,23 @@ router.get('/reviews/:id', async (req: Request, res: Response): Promise<void> =>
 
 /**
  * GET /api/insights
- * Returns aggregated insights across reviews.
+ * Returns aggregated insights across reviews. Supports optional ?userId=123.
  */
 router.get('/insights', async (req: Request, res: Response): Promise<void> => {
   try {
-    const insights = await reviewService.getInsights();
-    res.json(insights);
+    const userId = req.query.userId;
+
+    if (typeof userId === 'string') {
+      const userInsights = await reviewService.getDeveloperInsights(userId);
+      if (userInsights) {
+        res.json(userInsights);
+        return;
+      }
+    }
+
+    // Fallback to system-wide aggregate insights
+    const globalInsights = await reviewService.getInsights();
+    res.json(globalInsights);
   } catch (error: any) {
     console.error('[APIRoutes]: Error in GET /insights:', error);
     res.status(500).json({
@@ -98,12 +116,34 @@ router.get('/insights', async (req: Request, res: Response): Promise<void> => {
 
 /**
  * GET /api/dashboard
- * Returns summary statistics for dashboard widgets.
+ * Returns summary statistics for dashboard widgets. Supports optional ?userId=123.
  */
 router.get('/dashboard', async (req: Request, res: Response): Promise<void> => {
   try {
-    const dashboard = await reviewService.getDashboard();
-    res.json(dashboard);
+    const userId = req.query.userId;
+
+    if (typeof userId === 'string') {
+      const userInsights = await reviewService.getDeveloperInsights(userId);
+      const userSnapshots = await reviewService.getQualitySnapshots(userId);
+
+      if (userInsights || userSnapshots) {
+        res.json({
+          userId,
+          totalReviews: userInsights?.totalReviews || 0,
+          averageScore: userInsights?.averageScore || 0,
+          scoreTrend: userSnapshots?.history || [],
+          severityBreakdown: userInsights?.severityBreakdown || {},
+          categoryBreakdown: userInsights?.categoryBreakdown || {},
+          categoryAverages: userInsights?.categoryAverages || {},
+          updatedAt: userInsights?.updatedAt || new Date(),
+        });
+        return;
+      }
+    }
+
+    // Fallback to system-wide dashboard
+    const globalDashboard = await reviewService.getDashboard();
+    res.json(globalDashboard);
   } catch (error: any) {
     console.error('[APIRoutes]: Error in GET /dashboard:', error);
     res.status(500).json({

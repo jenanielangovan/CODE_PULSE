@@ -35,7 +35,7 @@ async function testReviewEngineMock() {
   // Mock GeminiService to simulate review output without API/network requests
   (reviewService as any).geminiService = {
     analyzeDiff: async () => ({
-      overallScore: 88,
+      score: 88,
       summary: 'Clean code with minor suggestions.',
       categories: {
         correctness: 90,
@@ -62,14 +62,15 @@ async function testReviewEngineMock() {
     const review = await reviewService.createReview(
       'const a = 1;',
       'test_file.ts',
-      'test_repo',
+      'user_123',
+      'project_abc',
       'commit_hash_123',
       'dev'
     );
 
     console.log('[Test]: Review output fields normalized correctly:');
     console.log(`  Language: ${review.language} (Expected: TypeScript)`);
-    console.log(`  Overall Score: ${review.overallScore} (Expected: 88)`);
+    console.log(`  Score: ${review.score} (Expected: 88)`);
     console.log(`  Correctness Score: ${review.categories.correctness} (Expected: 90)`);
     console.log(`  Findings Count: ${review.findings.length} (Expected: 1)`);
     console.log('✅ ReviewEngine mock evaluation completed successfully!');

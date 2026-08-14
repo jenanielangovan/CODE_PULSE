@@ -57,7 +57,7 @@ export class GeminiService {
     const responseSchema = {
       type: 'OBJECT',
       properties: {
-        overallScore: { type: 'INTEGER' },
+        score: { type: 'INTEGER' },
         summary: { type: 'STRING' },
         categories: {
           type: 'OBJECT',
@@ -86,7 +86,7 @@ export class GeminiService {
           },
         },
       },
-      required: ['overallScore', 'summary', 'categories', 'findings'],
+      required: ['score', 'summary', 'categories', 'findings'],
     };
 
     const request = {
