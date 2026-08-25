@@ -46,6 +46,7 @@ export interface QualitySnapshotsDocument {
 export class ReviewService {
   private geminiService: GeminiService;
   private historicalAnalysisService: HistoricalAnalysisService;
+  private inMemoryReviews: Map<string, FullReviewDocument> = new Map();
   private readonly reviewsCol = 'reviews';
   private readonly insightsCol = 'developerInsights';
   private readonly snapshotsCol = 'qualitySnapshots';
@@ -60,8 +61,8 @@ export class ReviewService {
    * 1. Detects language
    * 2. Calls Gemini for structured analysis
    * 3. Applies deterministic weighted scoring
-   * 4. Persists to Firestore
-   * 5. Triggers historical intelligence (async, non-blocking for response)
+   * 4. Persists to Firestore (with in-memory fallback for local dev)
+   * 5. Triggers historical intelligence
    */
   public async createReview(
     code: string,
@@ -100,16 +101,16 @@ export class ReviewService {
       createdAt: new Date(),
     };
 
-    let reviewId = `local_${Date.now()}`;
+    let reviewId = `rev_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-    // 5. Persist to Firestore
+    // 5. Persist to Firestore (with local store fallback)
     try {
       const docRef = await db.collection(this.reviewsCol).add({
         ...reviewDoc,
         createdAt: Timestamp.fromDate(reviewDoc.createdAt),
       });
       reviewId = docRef.id;
-      console.log(`[ReviewService]: Saved review ${reviewId}`);
+      console.log(`[ReviewService]: Saved review ${reviewId} to Firestore`);
 
       // 6. Update aggregate insights and snapshots (non-blocking)
       this.syncInsightsAndSnapshots(userId, reviewId, overallScore, reviewDoc.createdAt, reviewDoc.categories)
@@ -120,70 +121,163 @@ export class ReviewService {
         .catch(e => console.error('[ReviewService]: Error in historical analysis:', e));
 
     } catch (dbError) {
-      console.error('[ReviewService]: Firestore write error — review result returned without persistence:', dbError);
+      console.warn('[ReviewService]: Firestore unavailable — storing in memory for local session:', (dbError as any)?.message || dbError);
     }
 
-    return { id: reviewId, ...reviewDoc };
+    const fullDoc: FullReviewDocument = { id: reviewId, ...reviewDoc };
+    this.inMemoryReviews.set(reviewId, fullDoc);
+
+    return fullDoc;
   }
 
   /**
-   * Retrieves a specific review by Firestore document ID.
+   * Retrieves a specific review by ID.
    */
   public async getReviewById(id: string): Promise<FullReviewDocument | null> {
-    const doc = await db.collection(this.reviewsCol).doc(id).get();
-    if (!doc.exists) return null;
+    if (this.inMemoryReviews.has(id)) {
+      return this.inMemoryReviews.get(id)!;
+    }
 
-    const data = doc.data()!;
-    return this.deserializeReview(doc.id, data);
+    try {
+      const doc = await db.collection(this.reviewsCol).doc(id).get();
+      if (doc.exists) {
+        return this.deserializeReview(doc.id, doc.data()!);
+      }
+    } catch {
+      // Ignore Firestore read errors and fallback
+    }
+
+    return null;
   }
 
   /**
    * Lists recent reviews, optionally filtered by userId.
    */
   public async listReviews(userId?: string, limit = 20): Promise<FullReviewDocument[]> {
-    let query = db.collection(this.reviewsCol).orderBy('createdAt', 'desc').limit(limit);
-    if (userId) {
-      query = db.collection(this.reviewsCol)
-        .where('userId', '==', userId)
-        .orderBy('createdAt', 'desc')
-        .limit(limit) as any;
+    const list: FullReviewDocument[] = [];
+
+    try {
+      let query = db.collection(this.reviewsCol).orderBy('createdAt', 'desc').limit(limit);
+      if (userId) {
+        query = db.collection(this.reviewsCol)
+          .where('userId', '==', userId)
+          .orderBy('createdAt', 'desc')
+          .limit(limit) as any;
+      }
+
+      const snapshot = await query.get();
+      snapshot.forEach(doc => list.push(this.deserializeReview(doc.id, doc.data())));
+    } catch {
+      // Fallback to in-memory store
+      const memList = Array.from(this.inMemoryReviews.values())
+        .filter(r => !userId || r.userId === userId)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, limit);
+      return memList;
     }
 
-    const snapshot = await query.get();
-    const list: FullReviewDocument[] = [];
-    snapshot.forEach(doc => list.push(this.deserializeReview(doc.id, doc.data())));
-    return list;
+    // Merge in-memory reviews if not in firestore list
+    for (const mem of this.inMemoryReviews.values()) {
+      if (!list.some(r => r.id === mem.id) && (!userId || mem.userId === userId)) {
+        list.unshift(mem);
+      }
+    }
+
+    return list.slice(0, limit);
   }
 
   /**
    * Returns developer-level aggregate insights.
    */
   public async getDeveloperInsights(userId: string): Promise<DeveloperInsightsDocument | null> {
-    const doc = await db.collection(this.insightsCol).doc(userId).get();
-    if (!doc.exists) return null;
+    try {
+      const doc = await db.collection(this.insightsCol).doc(userId).get();
+      if (doc.exists) {
+        const data = doc.data()!;
+        return {
+          ...data,
+          updatedAt: (data.updatedAt as Timestamp)?.toDate() || data.updatedAt,
+        } as DeveloperInsightsDocument;
+      }
+    } catch {
+      // Fallback
+    }
 
-    const data = doc.data()!;
+    // Compute from in-memory if available
+    const userReviews = Array.from(this.inMemoryReviews.values()).filter(r => r.userId === userId);
+    if (userReviews.length === 0) return null;
+
+    let sum = 0;
+    const catSums = { correctness: 0, security: 0, performance: 0, maintainability: 0, readability: 0 };
+    const severityCount: Record<string, number> = { info: 0, low: 0, medium: 0, high: 0, critical: 0 };
+    let totalFindings = 0;
+
+    for (const r of userReviews) {
+      sum += r.overallScore;
+      catSums.correctness += r.categories?.correctness || 0;
+      catSums.security += r.categories?.security || 0;
+      catSums.performance += r.categories?.performance || 0;
+      catSums.maintainability += r.categories?.maintainability || 0;
+      catSums.readability += r.categories?.readability || 0;
+
+      for (const f of r.findings || []) {
+        totalFindings++;
+        const sev = f.severity?.toLowerCase() || 'low';
+        if (sev in severityCount) severityCount[sev]++;
+      }
+    }
+
+    const count = userReviews.length;
     return {
-      ...data,
-      updatedAt: (data.updatedAt as Timestamp)?.toDate() || data.updatedAt,
-    } as DeveloperInsightsDocument;
+      userId,
+      averageScore: Math.round(sum / count),
+      totalReviews: count,
+      totalFindings,
+      severityBreakdown: severityCount,
+      categoryAverages: {
+        correctness: Math.round(catSums.correctness / count),
+        security: Math.round(catSums.security / count),
+        performance: Math.round(catSums.performance / count),
+        maintainability: Math.round(catSums.maintainability / count),
+        readability: Math.round(catSums.readability / count),
+      },
+      updatedAt: new Date(),
+    };
   }
 
   /**
    * Returns quality snapshot history for trajectory charts.
    */
   public async getQualitySnapshots(userId: string): Promise<QualitySnapshotsDocument | null> {
-    const doc = await db.collection(this.snapshotsCol).doc(userId).get();
-    if (!doc.exists) return null;
+    try {
+      const doc = await db.collection(this.snapshotsCol).doc(userId).get();
+      if (doc.exists) {
+        const data = doc.data()!;
+        const history = (data.history || []).map((h: any) => ({
+          reviewId: h.reviewId,
+          score: h.score,
+          createdAt: (h.createdAt as Timestamp)?.toDate() || h.createdAt,
+        }));
+        return { userId: doc.id, history };
+      }
+    } catch {
+      // Fallback
+    }
 
-    const data = doc.data()!;
-    const history = (data.history || []).map((h: any) => ({
-      reviewId: h.reviewId,
-      score: h.score,
-      createdAt: (h.createdAt as Timestamp)?.toDate() || h.createdAt,
-    }));
+    const userReviews = Array.from(this.inMemoryReviews.values())
+      .filter(r => r.userId === userId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
-    return { userId: doc.id, history };
+    if (userReviews.length === 0) return null;
+
+    return {
+      userId,
+      history: userReviews.map(r => ({
+        reviewId: r.id || '',
+        score: r.overallScore,
+        createdAt: r.createdAt,
+      })),
+    };
   }
 
   /**
@@ -207,7 +301,13 @@ export class ReviewService {
       averageScore: insights?.averageScore || 0,
       latestScore,
       scoreDelta,
-      categoryAverages: insights?.categoryAverages || {},
+      categoryAverages: insights?.categoryAverages || {
+        correctness: 0,
+        security: 0,
+        performance: 0,
+        maintainability: 0,
+        readability: 0,
+      },
       scoreTrajectory: history,
       recentReviews,
       updatedAt: insights?.updatedAt || new Date(),

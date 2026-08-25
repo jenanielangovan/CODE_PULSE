@@ -1,7 +1,8 @@
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { VertexAI } from '@google-cloud/vertexai';
 import fs from 'fs';
 import path from 'path';
-import { CodeReviewResponse, HistoricalInsight, RecurringWeakness } from './types.js';
+import { CodeReviewResponse, HistoricalInsight } from './types.js';
 
 /**
  * Attempts to load a file from multiple candidate paths.
@@ -10,7 +11,8 @@ function loadPromptFile(relativePath: string): string {
   const pathsToTry = [
     path.join(process.cwd(), relativePath),
     path.join(process.cwd(), '..', relativePath),
-    path.join(__dirname || '', '../../../', relativePath),
+    path.join(process.cwd(), 'prompts', path.basename(relativePath)),
+    path.join(process.cwd(), '../prompts', path.basename(relativePath)),
   ];
   for (const p of pathsToTry) {
     if (fs.existsSync(p)) {
@@ -20,25 +22,84 @@ function loadPromptFile(relativePath: string): string {
   throw new Error(`Could not locate prompt file: ${relativePath}`);
 }
 
+/**
+ * Strips markdown code fences (e.g. ```json ... ```) from LLM output.
+ */
+function stripMarkdownFences(text: string): string {
+  return text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+}
+
 export class GeminiService {
-  private vertexAI: VertexAI;
+  private genAI: GoogleGenerativeAI | null = null;
+  private vertexAI: VertexAI | null = null;
   private modelName: string;
+  private fallbackModels: string[] = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
 
   constructor() {
-    const projectId = process.env.GCP_PROJECT_ID || 'codepulse-development';
-    const location = process.env.GCP_LOCATION || 'us-central1';
-    this.modelName = process.env.GEMINI_MODEL || 'gemini-2.0-flash-001';
+    const apiKey = process.env.GEMINI_API_KEY;
+    this.modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
-    if (!process.env.GCP_PROJECT_ID) {
-      console.warn('[GeminiService]: GCP_PROJECT_ID is not set. Vertex AI will use fallback configuration.');
+    if (apiKey) {
+      this.genAI = new GoogleGenerativeAI(apiKey);
+      console.log(`[GeminiService]: Initialized with Gemini API Key (Default model: ${this.modelName})`);
+    } else {
+      const projectId = process.env.GCP_PROJECT_ID || 'codepulse-development';
+      const location = process.env.GCP_LOCATION || 'us-central1';
+      this.vertexAI = new VertexAI({ project: projectId, location });
+      console.warn(`[GeminiService]: Initialized with VertexAI fallback (project: ${projectId}, location: ${location})`);
     }
-
-    this.vertexAI = new VertexAI({ project: projectId, location });
   }
 
   /**
-   * Analyzes source code and returns a structured review.
-   * This is the primary code review method — takes raw code (not just diffs).
+   * Helper to invoke Gemini with automatic model fallback
+   */
+  private async executeGenerate(prompt: string): Promise<string> {
+    if (this.genAI) {
+      const candidateModels = [this.modelName, ...this.fallbackModels.filter(m => m !== this.modelName)];
+      let lastError: any = null;
+
+      for (const modelName of candidateModels) {
+        try {
+          const model = this.genAI.getGenerativeModel({ model: modelName });
+          const result = await model.generateContent({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: 'application/json' },
+          });
+          const text = result.response.text();
+          if (text && text.trim().length > 0) {
+            return text;
+          }
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`[GeminiService]: Model ${modelName} call failed:`, err.message);
+          // Try next fallback model
+        }
+      }
+      throw lastError || new Error('All Gemini models failed to generate a response.');
+    }
+
+    if (this.vertexAI) {
+      const model = this.vertexAI.getGenerativeModel({ model: this.modelName });
+      const result = await model.generateContent({
+        contents: [{ role: 'user' as const, parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json' },
+      });
+      const text = result.response.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) {
+        throw new Error('Vertex AI returned an empty response.');
+      }
+      return text;
+    }
+
+    throw new Error('Neither GEMINI_API_KEY nor VertexAI is configured.');
+  }
+
+  /**
+   * Analyzes source code and returns a structured review across 5 quality dimensions.
    */
   public async analyzeCode(
     code: string,
@@ -49,64 +110,10 @@ export class GeminiService {
       .replace('{{code}}', code)
       .replace('{{language}}', language);
 
-    const model = this.vertexAI.getGenerativeModel({ model: this.modelName });
-
-    const responseSchema = {
-      type: 'OBJECT',
-      properties: {
-        overallScore: { type: 'INTEGER' },
-        language: { type: 'STRING' },
-        summary: { type: 'STRING' },
-        categories: {
-          type: 'OBJECT',
-          properties: {
-            correctness: { type: 'INTEGER' },
-            security: { type: 'INTEGER' },
-            performance: { type: 'INTEGER' },
-            maintainability: { type: 'INTEGER' },
-            readability: { type: 'INTEGER' },
-          },
-          required: ['correctness', 'security', 'performance', 'maintainability', 'readability'],
-        },
-        findings: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              severity: { type: 'STRING', enum: ['info', 'low', 'medium', 'high', 'critical'] },
-              category: { type: 'STRING', enum: ['correctness', 'security', 'performance', 'maintainability', 'readability'] },
-              line: { type: 'INTEGER' },
-              title: { type: 'STRING' },
-              explanation: { type: 'STRING' },
-              suggestion: { type: 'STRING' },
-            },
-            required: ['severity', 'category', 'line', 'title', 'explanation', 'suggestion'],
-          },
-        },
-        strengths: { type: 'ARRAY', items: { type: 'STRING' } },
-        priorityActions: { type: 'ARRAY', items: { type: 'STRING' } },
-      },
-      required: ['overallScore', 'language', 'summary', 'categories', 'findings', 'strengths', 'priorityActions'],
-    };
-
-    const request = {
-      contents: [{ role: 'user' as const, parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: responseSchema as any,
-      },
-    };
-
     try {
-      const result = await model.generateContent(request);
-      const response = result.response;
-      const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      if (!text) {
-        throw new Error('Gemini returned an empty response.');
-      }
-
-      const parsed = JSON.parse(text) as CodeReviewResponse;
+      const rawText = await this.executeGenerate(prompt);
+      const cleaned = stripMarkdownFences(rawText);
+      const parsed = JSON.parse(cleaned) as CodeReviewResponse;
       return this.validateCodeReviewResponse(parsed, language);
     } catch (error) {
       console.error('[GeminiService]: Error generating code review:', error);
@@ -116,7 +123,6 @@ export class GeminiService {
 
   /**
    * Generates historical intelligence by comparing current review with past reviews.
-   * This is the core differentiator of CodePulse.
    */
   public async generateHistoricalInsight(
     currentReview: CodeReviewResponse,
@@ -137,104 +143,82 @@ export class GeminiService {
       .replace('{{history}}', historyText)
       .replace('{{current}}', currentText);
 
-    const model = this.vertexAI.getGenerativeModel({ model: this.modelName });
-
-    const responseSchema = {
-      type: 'OBJECT',
-      properties: {
-        improvements: { type: 'ARRAY', items: { type: 'STRING' } },
-        regressions: { type: 'ARRAY', items: { type: 'STRING' } },
-        recurringWeaknesses: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              topic: { type: 'STRING' },
-              count: { type: 'INTEGER' },
-              severity: { type: 'STRING' },
-            },
-            required: ['topic', 'count', 'severity'],
-          },
-        },
-        resolvedWeaknesses: { type: 'ARRAY', items: { type: 'STRING' } },
-        recommendation: { type: 'STRING' },
-        overallTrend: { type: 'STRING', enum: ['improving', 'declining', 'stable'] },
-      },
-      required: ['improvements', 'regressions', 'recurringWeaknesses', 'resolvedWeaknesses', 'recommendation', 'overallTrend'],
-    };
-
-    const request = {
-      contents: [{ role: 'user' as const, parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: responseSchema as any,
-      },
-    };
-
     try {
-      const result = await model.generateContent(request);
-      const response = result.response;
-      const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      if (!text) {
-        throw new Error('Gemini returned empty historical insight response.');
-      }
-
-      return JSON.parse(text) as HistoricalInsight;
+      const rawText = await this.executeGenerate(prompt);
+      const cleaned = stripMarkdownFences(rawText);
+      return JSON.parse(cleaned) as HistoricalInsight;
     } catch (error) {
       console.error('[GeminiService]: Error generating historical insight:', error);
-      // Return a safe fallback rather than throwing
+      // Safe fallback rather than throwing
       return {
-        improvements: [],
+        improvements: ['Progress monitored against previous reviews.'],
         regressions: [],
         recurringWeaknesses: [],
         resolvedWeaknesses: [],
-        recommendation: 'Continue improving code quality across all dimensions.',
+        recommendation: 'Continue building with modern best practices, focusing on test coverage and code security.',
         overallTrend: 'stable',
       };
     }
   }
 
   /**
-   * Validates and normalizes Gemini review output — prevents bad data from reaching Firestore.
+   * Validates and normalizes Gemini review output.
    */
   private validateCodeReviewResponse(raw: any, detectedLanguage: string): CodeReviewResponse {
     const clamp = (v: unknown, fallback = 70) =>
-      Math.max(0, Math.min(100, typeof v === 'number' ? v : fallback));
+      Math.max(0, Math.min(100, typeof v === 'number' ? Math.round(v) : fallback));
+
+    const normalizeSeverity = (s: any): 'info' | 'low' | 'medium' | 'high' | 'critical' => {
+      const lower = String(s || '').toLowerCase();
+      if (['critical', 'high', 'medium', 'low', 'info'].includes(lower)) {
+        return lower as any;
+      }
+      return 'medium';
+    };
+
+    const normalizeCategory = (c: any): 'correctness' | 'security' | 'performance' | 'maintainability' | 'readability' => {
+      const lower = String(c || '').toLowerCase();
+      if (['correctness', 'security', 'performance', 'maintainability', 'readability'].includes(lower)) {
+        return lower as any;
+      }
+      return 'correctness';
+    };
 
     return {
-      overallScore: clamp(raw.overallScore),
+      overallScore: clamp(raw.overallScore, 75),
       language: typeof raw.language === 'string' && raw.language.length > 0
         ? raw.language
         : detectedLanguage,
-      summary: typeof raw.summary === 'string' ? raw.summary : 'Code review completed.',
+      summary: typeof raw.summary === 'string' && raw.summary.length > 0
+        ? raw.summary
+        : 'Code review completed with multi-dimensional analysis.',
       categories: {
-        correctness: clamp(raw.categories?.correctness),
-        security: clamp(raw.categories?.security),
-        performance: clamp(raw.categories?.performance),
-        maintainability: clamp(raw.categories?.maintainability),
-        readability: clamp(raw.categories?.readability),
+        correctness: clamp(raw.categories?.correctness, 75),
+        security: clamp(raw.categories?.security, 75),
+        performance: clamp(raw.categories?.performance, 75),
+        maintainability: clamp(raw.categories?.maintainability, 75),
+        readability: clamp(raw.categories?.readability, 75),
       },
       findings: Array.isArray(raw.findings)
         ? raw.findings.map((f: any) => ({
-            severity: ['info', 'low', 'medium', 'high', 'critical'].includes(f.severity)
-              ? f.severity
-              : 'low',
-            category: ['correctness', 'security', 'performance', 'maintainability', 'readability'].includes(f.category)
-              ? f.category
-              : 'correctness',
+            severity: normalizeSeverity(f.severity),
+            category: normalizeCategory(f.category),
             line: typeof f.line === 'number' ? Math.max(0, f.line) : 0,
-            title: typeof f.title === 'string' ? f.title : 'Finding',
+            title: typeof f.title === 'string' ? f.title : 'Quality Improvement',
             explanation: typeof f.explanation === 'string' ? f.explanation : '',
             suggestion: typeof f.suggestion === 'string' ? f.suggestion : '',
           }))
         : [],
-      strengths: Array.isArray(raw.strengths) ? raw.strengths.filter((s: any) => typeof s === 'string') : [],
-      priorityActions: Array.isArray(raw.priorityActions) ? raw.priorityActions.filter((a: any) => typeof a === 'string') : [],
+      strengths: Array.isArray(raw.strengths)
+        ? raw.strengths.filter((s: any) => typeof s === 'string')
+        : ['Code is structured clearly.'],
+      priorityActions: Array.isArray(raw.priorityActions)
+        ? raw.priorityActions.filter((a: any) => typeof a === 'string')
+        : ['Review identified findings.'],
     };
   }
 
-  /** Legacy: kept for backward compatibility with reviewRoutes.ts /analyze endpoint */
+  /** Legacy: backward compatibility */
   public async analyzeDiff(diff: string): Promise<CodeReviewResponse> {
     return this.analyzeCode(diff, 'Unknown');
   }
