@@ -118,17 +118,28 @@ export class GeminiService {
   private fallbackModels: string[] = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
 
   constructor() {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey =
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      process.env.GEMINI_KEY ||
+      process.env.VITE_GEMINI_API_KEY;
+
     this.modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
     if (apiKey) {
       this.genAI = new GoogleGenerativeAI(apiKey);
       console.log(`[GeminiService]: Initialized with Gemini API Key (Default model: ${this.modelName})`);
-    } else {
+    } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE) {
       const projectId = process.env.GCP_PROJECT_ID || 'codepulse-development';
       const location = process.env.GCP_LOCATION || 'us-central1';
-      this.vertexAI = new VertexAI({ project: projectId, location });
-      console.warn(`[GeminiService]: Initialized with VertexAI fallback (project: ${projectId}, location: ${location})`);
+      try {
+        this.vertexAI = new VertexAI({ project: projectId, location });
+        console.log(`[GeminiService]: Initialized with VertexAI (project: ${projectId}, location: ${location})`);
+      } catch (err: any) {
+        console.warn(`[GeminiService]: VertexAI initialization failed:`, err.message);
+      }
+    } else {
+      console.warn(`[GeminiService]: GEMINI_API_KEY is not set in environment variables.`);
     }
   }
 
@@ -136,6 +147,17 @@ export class GeminiService {
    * Helper to invoke Gemini with automatic model fallback
    */
   private async executeGenerate(prompt: string): Promise<string> {
+    // Re-check for API key in case env was loaded late or dynamically
+    const apiKey =
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      process.env.GEMINI_KEY ||
+      process.env.VITE_GEMINI_API_KEY;
+
+    if (!this.genAI && apiKey) {
+      this.genAI = new GoogleGenerativeAI(apiKey);
+    }
+
     if (this.genAI) {
       const candidateModels = [this.modelName, ...this.fallbackModels.filter(m => m !== this.modelName)];
       let lastError: any = null;
@@ -173,7 +195,9 @@ export class GeminiService {
       return text;
     }
 
-    throw new Error('Neither GEMINI_API_KEY nor VertexAI is configured.');
+    throw new Error(
+      'Gemini API Key is missing. Please add GEMINI_API_KEY in your Vercel Project Settings → Environment Variables.'
+    );
   }
 
   /**
@@ -397,7 +421,9 @@ Your goal is to help developers write clean, robust, secure, and high-performanc
       return { reply, model: this.modelName };
     }
 
-    throw new Error('Neither GEMINI_API_KEY nor VertexAI is configured.');
+    throw new Error(
+      'Gemini API Key is missing. Please add GEMINI_API_KEY in your Vercel Project Settings → Environment Variables.'
+    );
   }
 
   /** Legacy: backward compatibility */
