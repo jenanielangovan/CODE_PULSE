@@ -78,9 +78,29 @@ export function FindingCard({ finding, index }: FindingCardProps) {
           </div>
 
           <div>
-            <h4 className="text-xs font-semibold text-indigo-400 uppercase tracking-wider mb-1.5">
-              Recommended fix
-            </h4>
+            <div className="flex items-center justify-between mb-1.5">
+              <h4 className="text-xs font-semibold text-indigo-400 uppercase tracking-wider">
+                Recommended fix
+              </h4>
+              <button
+                type="button"
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent('open-gemini-chat', {
+                      detail: {
+                        initialPrompt: `Can you explain why "${finding.title}" is an issue and provide a complete, drop-in refactored code fix?`,
+                        context: { finding },
+                        autoSend: true,
+                      },
+                    })
+                  );
+                }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 transition-all hover:scale-105"
+                title="Open interactive discussion with Gemini AI for this finding"
+              >
+                <span>✨ Ask Gemini to Fix</span>
+              </button>
+            </div>
             <div className="bg-slate-950/60 rounded-lg p-3 border border-indigo-500/10">
               <pre className="text-xs text-slate-300 font-mono whitespace-pre-wrap break-words leading-relaxed">
                 {finding.suggestion}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, TrendingUp, AlertCircle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, TrendingUp, AlertCircle, Bot, Sparkles } from 'lucide-react';
 import type { ReviewDocument } from '../types';
 import { getReview } from '../services/api';
 import { ScoreRing } from '../components/ScoreRing';
@@ -183,8 +183,33 @@ export default function ResultsPage() {
               </div>
             )}
 
-            {/* Navigation */}
-            <div className="space-y-2">
+            {/* Navigation & AI Assistant */}
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent('open-gemini-chat', {
+                      detail: {
+                        initialPrompt: `Can you summarize the top priorities and fixes needed for this code review (${review.filename}) which scored ${review.overallScore}/100?`,
+                        context: {
+                          filename: review.filename,
+                          language: review.language,
+                          reviewSummary: review.summary,
+                        },
+                        autoSend: true,
+                      },
+                    })
+                  );
+                }}
+                className="w-full flex items-center justify-center gap-2 text-sm font-semibold py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-500 via-purple-600 to-violet-600 text-white shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40 hover:-translate-y-0.5 transition-all"
+                id="discuss-with-gemini-btn"
+              >
+                <Bot size={16} />
+                <span>Discuss with Gemini AI</span>
+                <Sparkles size={14} className="text-amber-300 animate-pulse" />
+              </button>
+
               <Link
                 to="/review"
                 className="btn-primary w-full flex items-center justify-center gap-2 text-sm"

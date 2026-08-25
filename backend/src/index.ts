@@ -39,14 +39,17 @@ app.use((_req, res) => {
   res.status(404).json({ error: 'Endpoint not found.' });
 });
 
-// Global error handler — never expose stack traces
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('[server]: Unhandled error:', err.message);
-  res.status(500).json({ error: 'An unexpected error occurred. Please try again.' });
+// Process error handlers — keep the server running reliably
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[server]: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[server]: Uncaught Exception:', err);
 });
 
 app.listen(port, () => {
   console.log(`[CodePulse]: Server running at http://localhost:${port}`);
   console.log(`[CodePulse]: GCP Project: ${process.env.GCP_PROJECT_ID || 'not configured'}`);
-  console.log(`[CodePulse]: Gemini Model: ${process.env.GEMINI_MODEL || 'gemini-2.0-flash-001'}`);
+  console.log(`[CodePulse]: Gemini Model: ${process.env.GEMINI_MODEL || 'gemini-3.6-flash'}`);
 });

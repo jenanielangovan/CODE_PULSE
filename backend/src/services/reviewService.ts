@@ -166,7 +166,7 @@ export class ReviewService {
       }
 
       const snapshot = await query.get();
-      snapshot.forEach(doc => list.push(this.deserializeReview(doc.id, doc.data())));
+      snapshot.forEach((doc: any) => list.push(this.deserializeReview(doc.id, doc.data())));
     } catch {
       // Fallback to in-memory store
       const memList = Array.from(this.inMemoryReviews.values())
@@ -327,7 +327,7 @@ export class ReviewService {
     const snapshot = await db.collection(this.reviewsCol).where('userId', '==', userId).get();
 
     const reviews: FullReviewDocument[] = [];
-    snapshot.forEach(doc => reviews.push(this.deserializeReview(doc.id, doc.data())));
+    snapshot.forEach((doc: any) => reviews.push(this.deserializeReview(doc.id, doc.data())));
 
     const count = reviews.length;
     if (count === 0) return;

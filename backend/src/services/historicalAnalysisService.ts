@@ -46,7 +46,7 @@ export class HistoricalAnalysisService {
         .get();
 
       const reviews: FullReviewDocument[] = [];
-      snapshot.forEach((doc) => {
+      snapshot.forEach((doc: any) => {
         const data = doc.data();
         reviews.push({
           id: doc.id,

@@ -128,7 +128,31 @@ VITE_API_BASE_URL=https://codepulse-api-xxxxxxxx-uc.a.run.app/api
 
 ---
 
-## 5. Local Development
+## 5. Vercel Deployment (Fullstack or Frontend)
+
+CodePulse is fully configured for seamless 1-click deployment on **Vercel**.
+
+### Option A: Monorepo / Fullstack on Vercel (Recommended)
+When importing the root Git repository into Vercel:
+1. **Framework Preset**: `Vite` (or `Other`)
+2. **Root Directory**: `./` (leave default)
+3. **Build Command**: `npm run build:frontend` (automatically set by `vercel.json`)
+4. **Output Directory**: `frontend/dist` (automatically set by `vercel.json`)
+5. **Environment Variables**:
+   * `GEMINI_API_KEY`: Your Google Gemini API Key
+   * `GEMINI_MODEL`: `gemini-2.5-flash` (or `gemini-2.0-flash`)
+
+All `/api/*` endpoints (Code Reviews, Gemini Chatbot, Historical Insights, Health checks) will run automatically as Vercel Serverless Functions via [`api/index.ts`](file:///c:/Users/jenan/OneDrive/Desktop/Projects/CODE_PULSE/api/index.ts).
+
+### Option B: Frontend Only on Vercel
+If you deploy the backend on Google Cloud Run or Render:
+1. **Root Directory**: `frontend`
+2. **Environment Variables**:
+   * `VITE_API_URL`: `https://your-backend-service.run.app/api`
+
+---
+
+## 6. Local Development
 
 ```bash
 # Backend

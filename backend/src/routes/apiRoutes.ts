@@ -2,11 +2,13 @@ import { Router, Request, Response } from 'express';
 import { ReviewService } from '../services/reviewService.js';
 import { HistoricalAnalysisService } from '../services/historicalAnalysisService.js';
 import { DemoService } from '../services/demoService.js';
+import { GeminiService } from '../gemini/geminiService.js';
 
 const router = Router();
 const reviewService = new ReviewService();
 const historicalAnalysisService = new HistoricalAnalysisService();
 const demoService = new DemoService();
+const geminiService = new GeminiService();
 
 // ---------------------------------------------------------------------------
 // Review endpoints
@@ -26,8 +28,8 @@ router.post('/reviews', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  if (code.length > 50_000) {
-    res.status(413).json({ error: 'Code exceeds the 50,000 character limit.' });
+  if (code.length > 100_000) {
+    res.status(413).json({ error: 'Code exceeds the 100,000 character limit.' });
     return;
   }
 
@@ -43,7 +45,7 @@ router.post('/reviews', async (req: Request, res: Response): Promise<void> => {
   } catch (error: any) {
     console.error('[apiRoutes] POST /reviews error:', error);
     res.status(500).json({
-      error: 'We could not complete the review. Please try again.',
+      error: error.message || 'We could not complete the review. Please try again.',
     });
   }
 });
@@ -209,6 +211,54 @@ router.get('/demo/insights', (_req: Request, res: Response): void => {
  */
 router.get('/demo/dashboard', (_req: Request, res: Response): void => {
   res.json(demoService.getDashboard());
+});
+
+// ---------------------------------------------------------------------------
+// AI Chat endpoints
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/chat
+ * Multi-turn AI code review & programming assistant chat powered by Gemini.
+ *
+ * Body: {
+ *   messages: Array<{ role: 'user' | 'model'; content: string }>,
+ *   context?: {
+ *     code?: string;
+ *     language?: string;
+ *     filename?: string;
+ *     reviewSummary?: string;
+ *     finding?: { title: string; severity: string; category: string; line?: number; explanation: string; suggestion: string }
+ *   }
+ * }
+ */
+router.post('/chat', async (req: Request, res: Response): Promise<void> => {
+  const { messages, context } = req.body;
+
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    res.status(400).json({ error: 'Messages array is required and must contain at least one message.' });
+    return;
+  }
+
+  // Validate message shapes
+  const validMessages = messages.every(
+    m => m && typeof m.content === 'string' && (m.role === 'user' || m.role === 'model')
+  );
+  if (!validMessages) {
+    res.status(400).json({ error: 'Each message must have role ("user" | "model") and string "content".' });
+    return;
+  }
+
+  try {
+    const result = await geminiService.chat(messages, context);
+    res.json(result);
+  } catch (error: any) {
+    console.error('[apiRoutes] POST /chat error:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to process chat with Gemini.',
+      fallback: 'I am currently unable to reach the Gemini service. Please check your network and API credentials.',
+    });
+  }
 });
 
 export default router;

@@ -142,3 +142,37 @@ export const SEVERITY_ORDER: Record<Severity, number> = {
   low: 2,
   info: 1,
 };
+
+// ============================================================
+// AI Chatbot Types
+// ============================================================
+
+export interface ChatMessage {
+  id?: string;
+  role: 'user' | 'model';
+  content: string;
+  timestamp?: string | Date;
+}
+
+export interface ChatFindingContext {
+  title: string;
+  severity: Severity | string;
+  category: Category | string;
+  line?: number;
+  explanation: string;
+  suggestion: string;
+}
+
+export interface ChatContext {
+  code?: string;
+  language?: string;
+  filename?: string;
+  reviewSummary?: string;
+  finding?: ChatFindingContext;
+}
+
+export interface ChatResponse {
+  reply: string;
+  model: string;
+}
+

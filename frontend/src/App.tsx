@@ -1,10 +1,12 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Navbar } from './components/Navbar';
+import { GeminiChatbot } from './components/GeminiChatbot';
 import Landing from './pages/Landing';
 import ReviewPage from './pages/ReviewPage';
 import ResultsPage from './pages/ResultsPage';
 import Dashboard from './pages/Dashboard';
 import HistoryPage from './pages/HistoryPage';
+import ChatPage from './pages/ChatPage';
 import './App.css';
 
 function App() {
@@ -19,6 +21,7 @@ function App() {
             <Route path="/results/:id" element={<ResultsPage />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/chat" element={<ChatPage />} />
             {/* 404 fallback */}
             <Route
               path="*"
@@ -36,6 +39,8 @@ function App() {
             />
           </Routes>
         </main>
+        {/* Global floating Gemini Assistant */}
+        <GeminiChatbot />
       </div>
     </BrowserRouter>
   );

@@ -1,6 +1,6 @@
 import type { ReviewDocument, DashboardData, StoredHistoricalInsight, ReviewRequest } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -93,3 +93,20 @@ export async function getDemoDashboard(): Promise<DashboardData & { isDemo: true
   const res = await fetch(`${API_BASE}/demo/dashboard`);
   return handleResponse(res);
 }
+
+// ============================================================
+// AI Chatbot API
+// ============================================================
+
+export async function sendChatMessage(
+  messages: Array<{ role: 'user' | 'model'; content: string }>,
+  context?: import('../types').ChatContext
+): Promise<import('../types').ChatResponse> {
+  const res = await fetch(`${API_BASE}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, context }),
+  });
+  return handleResponse<import('../types').ChatResponse>(res);
+}
+

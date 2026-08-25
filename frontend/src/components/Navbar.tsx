@@ -1,10 +1,11 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Activity, Code2, LayoutDashboard, TrendingUp, Zap } from 'lucide-react';
+import { Activity, Code2, LayoutDashboard, TrendingUp, Zap, Bot } from 'lucide-react';
 
 const NAV_LINKS = [
   { href: '/review', label: 'Review', icon: Code2 },
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/history', label: 'History', icon: TrendingUp },
+  { href: '/chat', label: 'AI Chat', icon: Bot },
 ];
 
 export function Navbar() {

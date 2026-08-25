@@ -4,8 +4,77 @@ import fs from 'fs';
 import path from 'path';
 import { CodeReviewResponse, HistoricalInsight } from './types.js';
 
+const DEFAULT_CODE_REVIEW_PROMPT = `# CodePulse Code Review System Prompt
+You are a world-class senior software engineer performing a thorough, actionable code review.
+The developer is submitting code written in **{{language}}**.
+
+## Your Mission
+Analyze the submitted code across **five quality dimensions** and return **only valid JSON** — no markdown, no prose outside the JSON structure.
+
+## Dimensions to Evaluate
+1. **Correctness** — Logical errors, edge cases, incorrect assumptions, type safety, API misuse
+2. **Security** — OWASP Top 10 risks, injection vulnerabilities, secrets in code, weak auth patterns, unsafe input handling
+3. **Performance** — Inefficient algorithms, N+1 queries, memory leaks, unnecessary computation, blocking operations
+4. **Maintainability** — Code duplication, tight coupling, poor modularity, missing abstractions, architectural concerns
+5. **Readability** — Naming quality, code clarity, comment quality, cognitive complexity, structure
+
+## Output Requirements
+Return a single JSON object matching this schema exactly:
+\`\`\`json
+{
+  "overallScore": 75,
+  "language": "{{language}}",
+  "summary": "Review summary",
+  "categories": {
+    "correctness": 75,
+    "security": 75,
+    "performance": 75,
+    "maintainability": 75,
+    "readability": 75
+  },
+  "findings": [
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "line": 1,
+      "title": "Finding Title",
+      "explanation": "Explanation",
+      "suggestion": "Suggestion"
+    }
+  ],
+  "strengths": ["Clear structure"],
+  "priorityActions": ["Review findings"]
+}
+\`\`\`
+
+=== CODE TO REVIEW ({{language}}) ===
+{{code}}
+=== END OF CODE ===`;
+
+const DEFAULT_HISTORICAL_PROMPT = `# CodePulse Historical Intelligence System Prompt
+You are CodePulse's senior developer growth analyst.
+Analyze the developer's review history and current review to identify growth patterns and return ONLY valid JSON.
+
+Previous Reviews:
+{{history}}
+
+Current Review:
+{{current}}
+
+Return schema:
+\`\`\`json
+{
+  "improvements": ["improvement note"],
+  "regressions": [],
+  "recurringWeaknesses": [],
+  "resolvedWeaknesses": [],
+  "recommendation": "Targeted recommendation",
+  "overallTrend": "stable"
+}
+\`\`\``;
+
 /**
- * Attempts to load a file from multiple candidate paths.
+ * Attempts to load a file from multiple candidate paths with embedded fallback.
  */
 function loadPromptFile(relativePath: string): string {
   const pathsToTry = [
@@ -15,11 +84,20 @@ function loadPromptFile(relativePath: string): string {
     path.join(process.cwd(), '../prompts', path.basename(relativePath)),
   ];
   for (const p of pathsToTry) {
-    if (fs.existsSync(p)) {
-      return fs.readFileSync(p, 'utf-8');
+    try {
+      if (fs.existsSync(p)) {
+        return fs.readFileSync(p, 'utf-8');
+      }
+    } catch {
+      // Continue to next path
     }
   }
-  throw new Error(`Could not locate prompt file: ${relativePath}`);
+
+  // Fallback to embedded prompt if file not found in deployment filesystem
+  if (relativePath.includes('historical')) {
+    return DEFAULT_HISTORICAL_PROMPT;
+  }
+  return DEFAULT_CODE_REVIEW_PROMPT;
 }
 
 /**
@@ -37,11 +115,11 @@ export class GeminiService {
   private genAI: GoogleGenerativeAI | null = null;
   private vertexAI: VertexAI | null = null;
   private modelName: string;
-  private fallbackModels: string[] = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
+  private fallbackModels: string[] = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
 
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY;
-    this.modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+    this.modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
     if (apiKey) {
       this.genAI = new GoogleGenerativeAI(apiKey);
@@ -216,6 +294,110 @@ export class GeminiService {
         ? raw.priorityActions.filter((a: any) => typeof a === 'string')
         : ['Review identified findings.'],
     };
+  }
+
+  /**
+   * Interactive multi-turn chat with CodePulse AI Assistant
+   */
+  public async chat(
+    messages: Array<{ role: 'user' | 'model'; content: string }>,
+    context?: {
+      code?: string;
+      language?: string;
+      filename?: string;
+      reviewSummary?: string;
+      finding?: {
+        title: string;
+        severity: string;
+        category: string;
+        line?: number;
+        explanation: string;
+        suggestion: string;
+      };
+    }
+  ): Promise<{ reply: string; model: string }> {
+    const systemInstruction = `You are CodePulse AI, an elite senior software architect and AI code review assistant.
+Your goal is to help developers write clean, robust, secure, and high-performance code.
+- Answer developer questions directly, accurately, and with helpful explanations.
+- When suggesting code modifications or fixes, provide clean, idiomatic code blocks with appropriate syntax highlighting (e.g. \`\`\`typescript ... \`\`\`).
+- If context regarding a code review or finding is provided, tailor your answer specifically to address that code/issue.
+- Be concise, constructive, friendly, and prioritize security and best practices.`;
+
+    let contextPrefix = '';
+    if (context) {
+      contextPrefix += '\n[CURRENT CODEPULSE CONTEXT]\n';
+      if (context.filename) contextPrefix += `Filename: ${context.filename}\n`;
+      if (context.language) contextPrefix += `Language: ${context.language}\n`;
+      if (context.reviewSummary) contextPrefix += `Review Summary: ${context.reviewSummary}\n`;
+      if (context.finding) {
+        contextPrefix += `Selected Finding: "${context.finding.title}" (${context.finding.severity.toUpperCase()} severity, category: ${context.finding.category})`;
+        if (context.finding.line) contextPrefix += ` at Line ${context.finding.line}`;
+        contextPrefix += `\nExplanation: ${context.finding.explanation}\nOriginal Suggestion: ${context.finding.suggestion}\n`;
+      }
+      if (context.code) {
+        contextPrefix += `Code Snippet:\n\`\`\`${context.language || ''}\n${context.code.slice(0, 8000)}\n\`\`\`\n`;
+      }
+      contextPrefix += '[END CONTEXT]\n\n';
+    }
+
+    if (this.genAI) {
+      const candidateModels = [this.modelName, ...this.fallbackModels.filter(m => m !== this.modelName)];
+      let lastError: any = null;
+
+      for (const modelName of candidateModels) {
+        try {
+          const model = this.genAI.getGenerativeModel({
+            model: modelName,
+            systemInstruction: { role: 'system', parts: [{ text: systemInstruction }] },
+          });
+
+          // Format contents for Generative AI API
+          const contents = messages.map((m, idx) => {
+            let text = m.content;
+            if (idx === 0 && contextPrefix) {
+              text = `${contextPrefix}${text}`;
+            }
+            return {
+              role: m.role === 'model' ? 'model' : 'user',
+              parts: [{ text }],
+            };
+          });
+
+          const result = await model.generateContent({ contents });
+          const reply = result.response.text();
+          if (reply && reply.trim().length > 0) {
+            return { reply, model: modelName };
+          }
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`[GeminiService.chat]: Model ${modelName} failed:`, err.message);
+        }
+      }
+      throw lastError || new Error('Failed to generate chat response from Gemini.');
+    }
+
+    if (this.vertexAI) {
+      const model = this.vertexAI.getGenerativeModel({ model: this.modelName });
+      const contents = messages.map((m, idx) => {
+        let text = m.content;
+        if (idx === 0 && contextPrefix) {
+          text = `${contextPrefix}${text}`;
+        }
+        return {
+          role: m.role === 'model' ? ('model' as const) : ('user' as const),
+          parts: [{ text }],
+        };
+      });
+
+      const result = await model.generateContent({ contents });
+      const reply = result.response.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!reply) {
+        throw new Error('Vertex AI returned an empty response.');
+      }
+      return { reply, model: this.modelName };
+    }
+
+    throw new Error('Neither GEMINI_API_KEY nor VertexAI is configured.');
   }
 
   /** Legacy: backward compatibility */
