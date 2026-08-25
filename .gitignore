@@ -43,6 +43,8 @@ coverage/
 # IDE / Editor configurations
 .vscode/
 .idea/
+.kilo/
+.gemini/
 *.suo
 *.ntvs*
 *.njsproj

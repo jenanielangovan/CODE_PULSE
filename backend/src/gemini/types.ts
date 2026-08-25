@@ -16,8 +16,26 @@ export interface CodeReviewFinding {
 }
 
 export interface CodeReviewResponse {
-  score: number;
+  overallScore: number;
+  language: string;
   summary: string;
   categories: CodeReviewCategoryScores;
   findings: CodeReviewFinding[];
+  strengths: string[];
+  priorityActions: string[];
+}
+
+export interface HistoricalInsight {
+  improvements: string[];
+  regressions: string[];
+  recurringWeaknesses: RecurringWeakness[];
+  resolvedWeaknesses: string[];
+  recommendation: string;
+  overallTrend: 'improving' | 'declining' | 'stable';
+}
+
+export interface RecurringWeakness {
+  topic: string;
+  count: number;
+  severity: string;
 }

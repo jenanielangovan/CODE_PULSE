@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Reviews — users can read/write their own reviews only
+    match /reviews/{reviewId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        request.auth.token.admin == true
+      );
+      allow create: if request.auth != null &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.code == null;  // Never store raw code
+      allow update, delete: if false;  // Reviews are immutable
+    }
+
+    // Developer insights — user can read their own
+    match /developerInsights/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;  // Only writable by the backend service account
+    }
+
+    // Quality snapshots — user can read their own
+    match /qualitySnapshots/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
+    }
+
+    // Historical insights — user can read their own
+    match /historicalInsights/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

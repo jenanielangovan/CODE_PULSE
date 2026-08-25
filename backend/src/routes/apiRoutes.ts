@@ -1,156 +1,214 @@
 import { Router, Request, Response } from 'express';
 import { ReviewService } from '../services/reviewService.js';
+import { HistoricalAnalysisService } from '../services/historicalAnalysisService.js';
+import { DemoService } from '../services/demoService.js';
 
 const router = Router();
 const reviewService = new ReviewService();
+const historicalAnalysisService = new HistoricalAnalysisService();
+const demoService = new DemoService();
+
+// ---------------------------------------------------------------------------
+// Review endpoints
+// ---------------------------------------------------------------------------
 
 /**
  * POST /api/reviews
- * Request Body: { code: string, filename?: string, userId?: string, projectId?: string, commitHash?: string, branch?: string }
+ * Submits code for review. Calls Gemini through Vertex AI and persists to Firestore.
+ *
+ * Body: { code, language?, filename?, userId?, projectId? }
  */
 router.post('/reviews', async (req: Request, res: Response): Promise<void> => {
+  const { code, language, filename, userId, projectId } = req.body;
+
+  if (!code || typeof code !== 'string' || code.trim().length === 0) {
+    res.status(400).json({ error: 'Missing or invalid "code" field. Must be a non-empty string.' });
+    return;
+  }
+
+  if (code.length > 50_000) {
+    res.status(413).json({ error: 'Code exceeds the 50,000 character limit.' });
+    return;
+  }
+
   try {
-    const { code, filename, userId, projectId, commitHash, branch } = req.body;
-
-    if (!code || typeof code !== 'string') {
-      res.status(400).json({ error: 'Missing or invalid "code" parameter in request body.' });
-      return;
-    }
-
-    console.log(`[APIRoutes]: Processing code review. Code length: ${code.length}`);
     const review = await reviewService.createReview(
       code,
+      language,
       filename,
       userId || 'default_user',
-      projectId || 'default_project',
-      commitHash,
-      branch
+      projectId || 'default_project'
     );
-
     res.status(201).json(review);
   } catch (error: any) {
-    console.error('[APIRoutes]: Error in POST /reviews:', error);
+    console.error('[apiRoutes] POST /reviews error:', error);
     res.status(500).json({
-      error: 'An internal server error occurred while executing the code review.',
-      message: error.message || 'Unknown error',
+      error: 'We could not complete the review. Please try again.',
     });
   }
 });
 
 /**
  * GET /api/reviews
- * Retrieves a list of recent code reviews.
+ * Lists recent reviews. Supports ?userId=xxx and ?limit=n query params.
  */
 router.get('/reviews', async (req: Request, res: Response): Promise<void> => {
+  const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+  const limit = parseInt(req.query.limit as string, 10) || 20;
+
   try {
-    const limitQuery = req.query.limit;
-    let limit = 20;
-    if (typeof limitQuery === 'string') {
-      const parsed = parseInt(limitQuery, 10);
-      if (!isNaN(parsed)) {
-        limit = parsed;
-      }
-    }
-    const reviews = await reviewService.listReviews(limit);
+    const reviews = await reviewService.listReviews(userId, Math.min(limit, 50));
     res.json(reviews);
   } catch (error: any) {
-    console.error('[APIRoutes]: Error in GET /reviews:', error);
-    res.status(500).json({
-      error: 'An error occurred while listing the code reviews.',
-      message: error.message || 'Unknown error',
-    });
+    console.error('[apiRoutes] GET /reviews error:', error);
+    res.status(500).json({ error: 'Failed to retrieve reviews.' });
   }
 });
 
 /**
  * GET /api/reviews/:id
- * Retrieves a specific review by Firestore ID.
+ * Retrieves a single review by ID.
  */
 router.get('/reviews/:id', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
-    const review = await reviewService.getReviewById(id as string);
-
+    const review = await reviewService.getReviewById(req.params.id as string);
     if (!review) {
-      res.status(404).json({ error: `Review with ID "${id}" was not found.` });
+      res.status(404).json({ error: `Review "${req.params.id}" not found.` });
       return;
     }
-
     res.json(review);
   } catch (error: any) {
-    console.error(`[APIRoutes]: Error in GET /reviews/${req.params.id}:`, error);
-    res.status(500).json({
-      error: 'An error occurred while retrieving the code review details.',
-      message: error.message || 'Unknown error',
-    });
+    console.error('[apiRoutes] GET /reviews/:id error:', error);
+    res.status(500).json({ error: 'Failed to retrieve review.' });
   }
 });
 
-/**
- * GET /api/insights
- * Returns aggregated insights across reviews. Supports optional ?userId=123.
- */
-router.get('/insights', async (req: Request, res: Response): Promise<void> => {
-  try {
-    const userId = req.query.userId;
-
-    if (typeof userId === 'string') {
-      const userInsights = await reviewService.getDeveloperInsights(userId);
-      if (userInsights) {
-        res.json(userInsights);
-        return;
-      }
-    }
-
-    // Fallback to system-wide aggregate insights
-    const globalInsights = await reviewService.getInsights();
-    res.json(globalInsights);
-  } catch (error: any) {
-    console.error('[APIRoutes]: Error in GET /insights:', error);
-    res.status(500).json({
-      error: 'An error occurred while computing historical review insights.',
-      message: error.message || 'Unknown error',
-    });
-  }
-});
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
 
 /**
  * GET /api/dashboard
- * Returns summary statistics for dashboard widgets. Supports optional ?userId=123.
+ * Returns dashboard summary for a user. Requires ?userId=xxx.
  */
 router.get('/dashboard', async (req: Request, res: Response): Promise<void> => {
+  const userId = typeof req.query.userId === 'string' ? req.query.userId : 'default_user';
+
   try {
-    const userId = req.query.userId;
-
-    if (typeof userId === 'string') {
-      const userInsights = await reviewService.getDeveloperInsights(userId);
-      const userSnapshots = await reviewService.getQualitySnapshots(userId);
-
-      if (userInsights || userSnapshots) {
-        res.json({
-          userId,
-          totalReviews: userInsights?.totalReviews || 0,
-          averageScore: userInsights?.averageScore || 0,
-          scoreTrend: userSnapshots?.history || [],
-          severityBreakdown: userInsights?.severityBreakdown || {},
-          categoryBreakdown: userInsights?.categoryBreakdown || {},
-          categoryAverages: userInsights?.categoryAverages || {},
-          updatedAt: userInsights?.updatedAt || new Date(),
-        });
-        return;
-      }
-    }
-
-    // Fallback to system-wide dashboard
-    const globalDashboard = await reviewService.getDashboard();
-    res.json(globalDashboard);
+    const dashboard = await reviewService.getDashboard(userId);
+    res.json(dashboard);
   } catch (error: any) {
-    console.error('[APIRoutes]: Error in GET /dashboard:', error);
-    res.status(500).json({
-      error: 'An error occurred while rendering the dashboard statistics.',
-      message: error.message || 'Unknown error',
-    });
+    console.error('[apiRoutes] GET /dashboard error:', error);
+    res.status(500).json({ error: 'Failed to retrieve dashboard data.' });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Historical insights
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/insights
+ * Returns stored historical insight for a user. Requires ?userId=xxx.
+ */
+router.get('/insights', async (req: Request, res: Response): Promise<void> => {
+  const userId = typeof req.query.userId === 'string' ? req.query.userId : 'default_user';
+
+  try {
+    const insight = await historicalAnalysisService.getHistoricalInsight(userId);
+    if (!insight) {
+      res.status(404).json({
+        error: 'No historical insight found.',
+        message: 'Submit at least 2 reviews to generate historical intelligence.',
+      });
+      return;
+    }
+    res.json(insight);
+  } catch (error: any) {
+    console.error('[apiRoutes] GET /insights error:', error);
+    res.status(500).json({ error: 'Failed to retrieve insights.' });
+  }
+});
+
+/**
+ * POST /api/insights/analyze
+ * Manually triggers historical analysis for a user.
+ *
+ * Body: { userId, currentReviewId }
+ */
+router.post('/insights/analyze', async (req: Request, res: Response): Promise<void> => {
+    const { userId, currentReviewId } = req.body as { userId: string; currentReviewId: string };
+
+  if (!userId || !currentReviewId) {
+    res.status(400).json({ error: 'userId and currentReviewId are required.' });
+    return;
+  }
+
+  try {
+    const insight = await historicalAnalysisService.analyzeUserHistory(userId, currentReviewId);
+    if (!insight) {
+      res.status(422).json({
+        error: 'Not enough review history to generate insights.',
+        message: 'At least 2 reviews are required.',
+      });
+      return;
+    }
+    res.json(insight);
+  } catch (error: any) {
+    console.error('[apiRoutes] POST /insights/analyze error:', error);
+    res.status(500).json({ error: 'Failed to analyze history.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Demo endpoints — labeled, deterministic, no production data
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/demo/reviews
+ * Returns all three demo reviews (62, 76, 91).
+ */
+router.get('/demo/reviews', (_req: Request, res: Response): void => {
+  res.json({
+    isDemo: true,
+    message: 'Demo data — not real production reviews.',
+    reviews: demoService.getReviews(),
+  });
+});
+
+/**
+ * GET /api/demo/reviews/:version
+ * Returns a specific demo review version (1, 2, or 3).
+ */
+router.get('/demo/reviews/:version', (req: Request, res: Response): void => {
+  const version = parseInt(String(req.params.version), 10);
+  if (version < 1 || version > 3) {
+    res.status(400).json({ error: 'Version must be 1, 2, or 3.' });
+    return;
+  }
+  res.json({
+    isDemo: true,
+    review: demoService.getReviewByVersion(version as 1 | 2 | 3),
+  });
+});
+
+/**
+ * GET /api/demo/insights
+ * Returns pre-computed historical insight showing the 62 → 76 → 91 story.
+ */
+router.get('/demo/insights', (_req: Request, res: Response): void => {
+  res.json({
+    isDemo: true,
+    message: 'Demo data — shows the CodePulse historical learning story.',
+    ...demoService.getHistoricalInsight(),
+  });
+});
+
+/**
+ * GET /api/demo/dashboard
+ */
+router.get('/demo/dashboard', (_req: Request, res: Response): void => {
+  res.json(demoService.getDashboard());
 });
 
 export default router;

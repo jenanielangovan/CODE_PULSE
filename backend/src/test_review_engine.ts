@@ -1,88 +1,52 @@
+/**
+ * Manual integration test for ReviewService.
+ * Run with: npx tsx src/test_review_engine.ts
+ *
+ * Prerequisites:
+ *   - GCP_PROJECT_ID set in .env
+ *   - Valid Vertex AI credentials
+ *   - Firestore enabled on the project
+ */
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { detectLanguage } from './utils/languageDetector.js';
 import { ReviewService } from './services/reviewService.js';
 
-// Define a test suite
-function testLanguageDetection() {
-  console.log('[Test]: Testing language detection...');
+const SAMPLE_PYTHON_CODE = `
+import sqlite3
 
-  const testCases = [
-    { filename: 'index.ts', content: 'const val: string = "hello";', expected: 'TypeScript' },
-    { filename: 'app.jsx', content: 'export default function App() {}', expected: 'JavaScript (React)' },
-    { filename: 'script.py', content: 'def main():\n    print("hello")', expected: 'Python' },
-    { filename: 'main.go', content: 'package main', expected: 'Go' },
-    { filename: 'server.js', content: 'const express = require("express");', expected: 'JavaScript' },
-    { filename: undefined, content: 'def process_data(x):\n    return x * 2', expected: 'Python' },
-  ];
+def get_user(user_id):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    # SQL injection vulnerability
+    query = f"SELECT * FROM users WHERE id = {user_id}"
+    cursor.execute(query)
+    return cursor.fetchone()
+`;
 
-  let passes = 0;
-  for (const tc of testCases) {
-    const result = detectLanguage(tc.filename, tc.content);
-    const success = result === tc.expected;
-    console.log(`  File: ${tc.filename || 'None'} -> Detected: ${result} | Expected: ${tc.expected} | ${success ? '✅ PASS' : '❌ FAIL'}`);
-    if (success) passes++;
-  }
-
-  console.log(`[Test]: Language detection results: ${passes}/${testCases.length} passed.`);
-}
-
-async function testReviewEngineMock() {
-  console.log('[Test]: Testing ReviewService structure & normalization...');
-  const reviewService = new ReviewService();
-
-  // Mock GeminiService to simulate review output without API/network requests
-  (reviewService as any).geminiService = {
-    analyzeDiff: async () => ({
-      score: 88,
-      summary: 'Clean code with minor suggestions.',
-      categories: {
-        correctness: 90,
-        security: 85,
-        performance: 80,
-        maintainability: 95,
-        readability: 90,
-      },
-      findings: [
-        {
-          severity: 'low',
-          category: 'performance',
-          line: 12,
-          title: 'Unnecessary loop iteration',
-          explanation: 'Loop runs one extra time.',
-          suggestion: 'Change < to <=.',
-        },
-      ],
-    }),
-  };
+async function runTest() {
+  const service = new ReviewService();
+  console.log('[Test]: Running code review...');
 
   try {
-    // Run createReview which calls the mock service, runs language detection, normalizes, and attempts to write to db (will warn if db fails)
-    const review = await reviewService.createReview(
-      'const a = 1;',
-      'test_file.ts',
-      'user_123',
-      'project_abc',
-      'commit_hash_123',
-      'dev'
+    const review = await service.createReview(
+      SAMPLE_PYTHON_CODE,
+      'Python',
+      'test_user_service.py',
+      'test_user',
+      'test_project'
     );
 
-    console.log('[Test]: Review output fields normalized correctly:');
-    console.log(`  Language: ${review.language} (Expected: TypeScript)`);
-    console.log(`  Score: ${review.score} (Expected: 88)`);
-    console.log(`  Correctness Score: ${review.categories.correctness} (Expected: 90)`);
-    console.log(`  Findings Count: ${review.findings.length} (Expected: 1)`);
-    console.log('✅ ReviewEngine mock evaluation completed successfully!');
+    console.log('[Test]: Review completed!');
+    console.log(`[Test]: Score: ${review.overallScore} (${review.qualityLabel})`);
+    console.log(`[Test]: Language: ${review.language}`);
+    console.log(`[Test]: Findings: ${review.findings.length}`);
+    console.log(`[Test]: Strengths: ${review.strengths.length}`);
+    console.log('[Test]: Summary:', review.summary);
   } catch (error) {
-    console.error('❌ ReviewEngine mock evaluation failed:', error);
+    console.error('[Test]: FAILED:', error);
+    process.exit(1);
   }
 }
 
-async function runAll() {
-  testLanguageDetection();
-  console.log('');
-  await testReviewEngineMock();
-}
-
-runAll();
+runTest();

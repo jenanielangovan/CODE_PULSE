@@ -1,0 +1,73 @@
+# CodePulse — Cloud Build CI/CD Pipeline
+# Triggered by push to main branch on GitHub
+# Flow: GitHub → Cloud Build → Docker build → Artifact Registry → Cloud Run
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: codepulse-api
+  _REPO: codepulse-backend
+  _AR_HOSTNAME: us-central1-docker.pkg.dev
+
+steps:
+  # Step 1: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build'
+    args:
+      - build
+      - --tag
+      - '${_AR_HOSTNAME}/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA'
+      - --tag
+      - '${_AR_HOSTNAME}/$PROJECT_ID/${_REPO}/${_SERVICE}:latest'
+      - --file
+      - 'backend/Dockerfile'
+      - ./backend
+    dir: '.'
+
+  # Step 2: Push image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push'
+    args:
+      - push
+      - '--all-tags'
+      - '${_AR_HOSTNAME}/$PROJECT_ID/${_REPO}/${_SERVICE}'
+    waitFor: ['build']
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy'
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - '${_SERVICE}'
+      - --image
+      - '${_AR_HOSTNAME}/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA'
+      - --region
+      - '${_REGION}'
+      - --platform
+      - managed
+      - --allow-unauthenticated
+      - --set-env-vars
+      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_LOCATION=${_REGION},GEMINI_MODEL=gemini-2.0-flash-001,NODE_ENV=production'
+      - --memory
+      - '512Mi'
+      - --cpu
+      - '1'
+      - --concurrency
+      - '80'
+      - --max-instances
+      - '10'
+      - --min-instances
+      - '0'
+    waitFor: ['push']
+
+# Store image in Artifact Registry
+images:
+  - '${_AR_HOSTNAME}/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA'
+  - '${_AR_HOSTNAME}/$PROJECT_ID/${_REPO}/${_SERVICE}:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+timeout: '1200s'
